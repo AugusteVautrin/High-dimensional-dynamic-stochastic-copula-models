@@ -8,6 +8,49 @@ from joblib import Parallel, delayed
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 
+
+def process_single_asset(i, p, mu_i, phi_i, sigma_i, z, zeta_i, data_i, first_iter, x_prev_i=None):
+        """Traite un seul actif : Crée le SSM, lance le SMC/CSMC et retourne la trajectoire."""
+        
+        # Recréation du modèle local pour l'actif i
+        ssm_i = IdentifiedLoadingSSM(
+            row_idx=i, p_factors=p,
+            mu=mu_i, phi=phi_i, sigma_eta=sigma_i,
+            z=z, zeta=zeta_i, data_x=data_i
+        )
+        
+        # SMC ou CSMC
+        if first_iter:
+            cpf = particles.SMC(fk=ssm.Bootstrap(ssm=ssm_i, data=data_i), 
+                            N=100, store_history=True)
+        else:
+            # x_prev_i doit être déjà formaté en liste de arrays si nécessaire
+            cpf = mcmc.CSMC(fk=ssm.Bootstrap(ssm=ssm_i, data=data_i), 
+                            N=100, xstar=x_prev_i)
+        
+        cpf.run()
+        
+        # Extraction (identique à votre code)
+        raw_traj_list = cpf.hist.extract_one_trajectory()
+        traj = np.array(raw_traj_list)
+        
+        # Nettoyage des dimensions
+        T = data_i.shape[0]
+        dim = ssm_i.dim_state
+        
+        if traj.ndim > 2: traj = np.squeeze(traj)
+        if traj.ndim == 1: traj = traj[:, np.newaxis]
+        if traj.shape[0] == T + 1: traj = traj[1:]
+        if traj.shape != (T, dim): traj = traj.reshape(T, dim)
+            
+        # Calcul des lambdas (exponentielle pour la diagonale)
+        lambdas_vals = np.zeros((T, p))
+        lambdas_vals[:, :dim] = traj
+        if i < p:
+            lambdas_vals[:, i] = np.exp(traj[:, i])
+            
+        return i, traj, lambdas_vals
+
 class IdentifiedLoadingSSM(ssm.StateSpaceModel):
     """
     Modèle espace d'état avec correction MvNormal pour éviter les erreurs de broadcasting.
@@ -103,8 +146,8 @@ class GibbsFactorCopula:
         
         # --- 1. Initialisation des Paramètres ---
         self.theta = {
-            'mu': np.random.normal(0.4, 0.5, size=(self.n, self.p)),
-            'phi': np.random.uniform(0.5, 0.9, size=(self.n, self.p)),
+            'mu': np.ones((self.n, self.p)) * 0.5,
+            'phi': np.ones((self.n, self.p))* 0.85,
             'sigma': np.ones((self.n, self.p)) * 0.1
         }
         
@@ -114,8 +157,8 @@ class GibbsFactorCopula:
         self.nu = nu  # Initialisation de nu > 2
         
         # Stockage des états: (T, n, p)
-        self.latent_states = np.zeros((self.T, self.n, self.p))
-        self.lambdas = np.zeros((self.T, self.n, self.p))
+        self.latent_states = np.ones((self.T, self.n, self.p))*0.5
+        self.lambdas = np.ones((self.T, self.n, self.p))*0.5
         
         # Initialisation (Diagonale non nulle pour éviter log(0))
         for i in range(self.p):
@@ -125,10 +168,32 @@ class GibbsFactorCopula:
         # Flag pour savoir si c'est la toute première itération (SMC vs CSMC)
         self.first_iter = True
 
-
-
-
     def update_zeta(self):
+        T, N = self.T, self.n
+        alpha_post = (self.nu + N) / 2.0
+        
+        for t in range(T):
+            # 1. Calcul des composantes pour Woodbury
+            lam_t = self.lambdas[t] # (N, P)
+            # S_inv est la diagonale de (1 + lam*lam')^-1
+            S_sq = 1.0 + np.sum(lam_t**2, axis=1)
+            inv_S_sq = 1.0 / S_sq
+            
+            # 2. Calcul de d_t^2 = x' * Omega_inv * x
+            # Pour le modèle à facteurs, Omega = D + L*L' 
+            # Ici, via la construction du papier, D est diag(inv_S_sq)
+            x_scaled = self.data[t] * np.sqrt(S_sq)
+            # d_t^2 simplifié par la structure du modèle :
+            resid = x_scaled - np.dot(lam_t, self.z[t])
+            d_t_sq = np.sum(resid**2) 
+            
+            # 3. Tirage Inverse Gamma
+            beta_post = (self.nu + d_t_sq) / 2.0
+            # Rappel : IG(a, b) est 1 / Gamma(a, 1/b)
+            self.zeta[t, :] = 1.0 / np.random.gamma(alpha_post, 1.0 / beta_post)
+
+
+    def update_zeta_old(self):
         """
         Step: Mise à jour des variables de mélange zeta_t (Cas G=1).
         Dans l'article, zeta_t suit une loi Inverse Gamma.
@@ -310,47 +375,6 @@ class GibbsFactorCopula:
             
         self.z = new_z
 
-    def process_single_asset(i, p, mu_i, phi_i, sigma_i, z, zeta_i, data_i, first_iter, x_prev_i=None):
-        """Traite un seul actif : Crée le SSM, lance le SMC/CSMC et retourne la trajectoire."""
-        
-        # Recréation du modèle local pour l'actif i
-        ssm_i = IdentifiedLoadingSSM(
-            row_idx=i, p_factors=p,
-            mu=mu_i, phi=phi_i, sigma_eta=sigma_i,
-            z=z, zeta=zeta_i, data_x=data_i
-        )
-        
-        # SMC ou CSMC
-        if first_iter:
-            cpf = particles.SMC(fk=ssm.Bootstrap(ssm=ssm_i, data=data_i), 
-                            N=100, store_history=True)
-        else:
-            # x_prev_i doit être déjà formaté en liste de arrays si nécessaire
-            cpf = mcmc.CSMC(fk=ssm.Bootstrap(ssm=ssm_i, data=data_i), 
-                            N=100, xstar=x_prev_i)
-        
-        cpf.run()
-        
-        # Extraction (identique à votre code)
-        raw_traj_list = cpf.hist.extract_one_trajectory()
-        traj = np.array(raw_traj_list)
-        
-        # Nettoyage des dimensions
-        T = data_i.shape[0]
-        dim = ssm_i.dim_state
-        
-        if traj.ndim > 2: traj = np.squeeze(traj)
-        if traj.ndim == 1: traj = traj[:, np.newaxis]
-        if traj.shape[0] == T + 1: traj = traj[1:]
-        if traj.shape != (T, dim): traj = traj.reshape(T, dim)
-            
-        # Calcul des lambdas (exponentielle pour la diagonale)
-        lambdas_vals = np.zeros((T, p))
-        lambdas_vals[:, :dim] = traj
-        if i < p:
-            lambdas_vals[:, i] = np.exp(traj[:, i])
-            
-        return i, traj, lambdas_vals
     
     def update_lambda_pg_parallel(self, n_jobs=-1):
         """Version parallélisée de update_lambda_pg"""
@@ -478,8 +502,56 @@ class GibbsFactorCopula:
         beta_post = 0.25 + (sse / 2.0)
         
         self.theta['sigma'] = 1.0 / np.random.gamma(alpha_post, 1.0/beta_post)
-
+    
     def update_mu_phi(self):
+        h_curr = self.latent_states[:-1] # (T-1, N, P)
+        h_next = self.latent_states[1:]  # (T-1, N, P)
+        T_eff = h_curr.shape[0]
+        sigma_sq = self.theta['sigma']   # (N, P)
+        phi = self.theta['phi']           # (N, P)
+        
+        # --- UPDATE MU ---
+        # Modèle: (h_next - phi*h_curr) = mu * (1 - phi) + eta
+        X_mu = 1.0 - phi
+        # Y_mu est le résidu sans la partie mu: h_next - phi*h_curr
+        Y_mu = h_next - phi * h_curr # (T-1, N, P)
+        sum_Y = np.sum(Y_mu, axis=0)  # (N, P)
+        
+        prec_prior = 1.0 / 2.0 # Prior variance = 2.0
+        # Précision de la vraisemblance pour mu
+        prec_lik = T_eff * (X_mu**2) / sigma_sq
+        prec_post = prec_prior + prec_lik
+        
+        # Numérateur: (mu_0 / tau_0^2) + ( (1-phi) * sum(h_t+1 - phi*h_t) / sigma^2 )
+        num_post = (prec_prior * 0.4) + (X_mu / sigma_sq) * sum_Y
+        mean_post = num_post / prec_post
+        
+        self.theta['mu'] = np.random.normal(mean_post, np.sqrt(1.0/prec_post))
+        
+        # --- UPDATE PHI ---
+        mu = self.theta['mu']
+        # On centre les h : h_t - mu
+        Xc = h_curr - mu # (T-1, N, P)
+        Yc = h_next - mu # (T-1, N, P)
+        
+        num_phi = np.sum(Xc * Yc, axis=0)
+        den_phi = np.sum(Xc**2, axis=0)
+        
+        prec_prior_phi = 1.0 / 0.1 # Prior un peu moins informatif que 0.001
+        prec_lik_phi = den_phi / sigma_sq
+        prec_post_phi = prec_prior_phi + prec_lik_phi
+        
+        # Moyenne pondérée
+        # 0.985 est votre prior mean (persistance élevée)
+        mean_post_phi = (prec_prior_phi * 0.985 + num_phi / sigma_sq) / prec_post_phi
+        std_post_phi = np.sqrt(1.0/prec_post_phi)
+        
+        # Tirage tronqué entre -1 et 1 pour la stationnarité
+        a = (-1.0 - mean_post_phi) / std_post_phi
+        b = (1.0 - mean_post_phi) / std_post_phi
+        self.theta['phi'] = stats.truncnorm.rvs(a, b, loc=mean_post_phi, scale=std_post_phi)
+
+    def update_mu_phi_old(self):
         """Step 7: Mu et Phi"""
         h_curr = self.latent_states[:-1]
         h_next = self.latent_states[1:]
