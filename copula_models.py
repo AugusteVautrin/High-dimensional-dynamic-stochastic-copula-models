@@ -238,3 +238,5 @@ class GroupedStudentFactorCopulaSSM(ssm.StateSpaceModel):
 def simulate_copula_model_particles(model, T):
     true_states, observations = model.simulate(T)
     return np.array(true_states), np.array(observations)
+
+# test 
