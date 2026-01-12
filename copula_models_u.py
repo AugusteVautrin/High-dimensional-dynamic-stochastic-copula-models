@@ -28,9 +28,6 @@ from particles import state_space_models as ssm
 from particles import distributions as dists
 
 
-# =============================================================================
-# 1. FONCTIONS NUMBA OPTIMISÉES POUR LES DENSITÉS DE COPULE
-# =============================================================================
 
 @njit(fastmath=True, cache=True)
 def _build_correlation_matrix(C, n, p):
@@ -156,18 +153,15 @@ def _student_copula_logpdf(x, C, nu, N, n, p):
             for k in range(n):
                 quad += x[j] * R_inv[j, k] * x[k]
         
-        # === Log-densité jointe Student multivariée ===
         log_joint = (log_const_joint 
                      - 0.5 * log_det 
                      - ((nu + n) / 2.0) * np.log(1.0 + quad / nu))
         
-        # === Log-densité des marginales Student univariées ===
         log_marginals = 0.0
         for j in range(n):
             log_marginals += (log_const_marginal 
                               - ((nu + 1) / 2.0) * np.log(1.0 + x[j]**2 / nu))
         
-        # === Densité de copule = jointe / marginales ===
         log_pdfs[i] = log_joint - log_marginals
     
     return log_pdfs
@@ -186,7 +180,7 @@ def _grouped_student_copula_logpdf(x, C, nus, group_map, N, n, p, G):
     """
     log_pdfs = np.zeros(N)
     
-    # ν moyen pour la jointe (approximation)
+    # ν moyen pour la jointe
     nu_mean = 0.0
     for g in range(G):
         nu_mean += nus[g]
@@ -198,7 +192,6 @@ def _grouped_student_copula_logpdf(x, C, nus, group_map, N, n, p, G):
                        - (n / 2.0) * np.log(nu_mean * np.pi))
     
     for i in range(N):
-        # Construction de R
         R = _build_correlation_matrix(C[i], n, p)
         
         det_R = np.linalg.det(R)
@@ -235,9 +228,6 @@ def _grouped_student_copula_logpdf(x, C, nus, group_map, N, n, p, G):
     return log_pdfs
 
 
-# =============================================================================
-# 2. TRANSITION D'ÉTAT (identique)
-# =============================================================================
 
 class NormalTransition(dists.ProbDist):
     """Transition AR(1) Gaussienne pour les factor loadings."""
@@ -261,10 +251,6 @@ class NormalTransition(dists.ProbDist):
             return random.normal(loc=self.loc, scale=self.scale, size=(size, d))
         return random.normal(loc=self.loc, scale=self.scale)
 
-
-# =============================================================================
-# 3. DISTRIBUTIONS D'OBSERVATION (avec uniformes)
-# =============================================================================
 
 class GaussianCopulaDistU(dists.ProbDist):
     """
@@ -419,11 +405,7 @@ class GroupedStudentCopulaDistU(dists.ProbDist):
             u[i] = student_t.cdf(x[i], df=self.nus[g])
         
         return u
-
-
-# =============================================================================
-# 4. MODÈLES ESPACE D'ÉTAT (avec uniformes)
-# =============================================================================
+    
 
 class GaussianFactorCopulaSSM_U(ssm.StateSpaceModel):
     """
@@ -505,11 +487,7 @@ class GroupedStudentFactorCopulaSSM_U(ssm.StateSpaceModel):
     def PY(self, t, xp, x):
         loadings = x.reshape(-1, self.n, self.p)
         return GroupedStudentCopulaDistU(loadings, self.nus, self.group_map)
-
-
-# =============================================================================
-# 5. WRAPPER DE SIMULATION
-# =============================================================================
+    
 
 def simulate_copula_model_U(model, T):
     """
@@ -525,10 +503,6 @@ def simulate_copula_model_U(model, T):
     states, observations = model.simulate(T)
     return np.array(states), np.array(observations)
 
-
-# =============================================================================
-# 6. UTILITAIRES DE CONVERSION
-# =============================================================================
 
 def u_to_x_gaussian(u):
     """Convertit uniformes → x pour copule Gaussienne."""
@@ -551,10 +525,6 @@ def x_to_u_student(x, nu):
     """Convertit x → uniformes pour copule Student."""
     return student_t.cdf(x, df=nu)
 
-
-# =============================================================================
-# 7. CALCUL DES CORRÉLATIONS
-# =============================================================================
 
 def compute_correlation_from_loadings(lambdas):
     """
@@ -611,153 +581,3 @@ def compute_kendall_tau(R):
         Matrices de tau de Kendall
     """
     return (2 / np.pi) * np.arcsin(R)
-
-
-# =============================================================================
-# 8. EXEMPLE D'UTILISATION
-# =============================================================================
-
-if __name__ == "__main__":
-    import matplotlib.pyplot as plt
-    
-    print("="*60)
-    print("TEST DES MODÈLES DE COPULES AVEC UNIFORMES")
-    print("="*60)
-    
-    # Configuration
-    np.random.seed(42)
-    T = 500
-    n_series = 5
-    n_factors = 1
-    N_particles = 1000
-    
-    # === Test Copule Student ===
-    print("\n[1] Simulation Student Factor Copula")
-    
-    model_student = StudentFactorCopulaSSM_U(
-        n_series=n_series,
-        n_factors=n_factors,
-        mu=0.5,
-        phi=0.95,
-        sigma=0.1,
-        nu=5.0
-    )
-    
-    states, u_data = simulate_copula_model_U(model_student, T)
-    
-    print(f"    États: shape={states.shape}, range=[{states.min():.2f}, {states.max():.2f}]")
-    print(f"    Uniformes: shape={u_data.shape}, range=[{u_data.min():.4f}, {u_data.max():.4f}]")
-    
-    # Vérification : les u doivent être dans (0,1)
-    assert np.all((u_data > 0) & (u_data < 1)), "Les u doivent être dans (0,1)!"
-    print("    ✓ Uniformes valides")
-    
-    # === Bootstrap Filter ===
-    print("\n[2] Bootstrap Filter")
-    
-    fk = ssm.Bootstrap(ssm=model_student, data=u_data)
-    pf = particles.SMC(fk=fk, N=N_particles, store_history=True)
-    pf.run()
-    
-    print(f"    Log-Likelihood: {pf.logLt:.2f}")
-    
-    # États filtrés
-    filtered_states = np.zeros((T, model_student.state_dim))
-    for t in range(T):
-        filtered_states[t] = np.average(pf.hist.X[t], weights=pf.hist.wgts[t].W, axis=0)
-    
-    # === Calcul des corrélations ===
-    print("\n[3] Corrélations conditionnelles")
-    
-    lambdas_true = states.reshape(T, n_series, n_factors)
-    lambdas_filtered = filtered_states.reshape(T, n_series, n_factors)
-    
-    R_true = compute_correlation_from_loadings(lambdas_true)
-    R_filtered = compute_correlation_from_loadings(lambdas_filtered)
-    
-    # Corrélation moyenne (hors diagonale)
-    mask = ~np.eye(n_series, dtype=bool)
-    corr_true_mean = np.array([R_true[t][mask].mean() for t in range(T)])
-    corr_filtered_mean = np.array([R_filtered[t][mask].mean() for t in range(T)])
-    
-    print(f"    Corrélation vraie: mean={corr_true_mean.mean():.3f}, std={corr_true_mean.std():.3f}")
-    print(f"    Corrélation filtrée: mean={corr_filtered_mean.mean():.3f}, std={corr_filtered_mean.std():.3f}")
-    
-    # === Visualisation ===
-    print("\n[4] Visualisation")
-    
-    fig, axes = plt.subplots(2, 2, figsize=(12, 8))
-    
-    # Uniformes simulées (histogramme)
-    ax = axes[0, 0]
-    ax.hist(u_data.flatten(), bins=50, density=True, alpha=0.7, edgecolor='black')
-    ax.axhline(1.0, color='r', ls='--', label='Uniforme théorique')
-    ax.set_title('Distribution des uniformes simulées')
-    ax.set_xlabel('u')
-    ax.legend()
-    
-    # Loadings : vrai vs filtré
-    ax = axes[0, 1]
-    ax.plot(states[:, 0], 'b-', alpha=0.7, label='Vrai λ₁')
-    ax.plot(filtered_states[:, 0], 'r--', alpha=0.7, label='Filtré λ₁')
-    ax.set_title('Loading (série 1)')
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-    
-    # Corrélation moyenne
-    ax = axes[1, 0]
-    ax.plot(corr_true_mean, 'b-', alpha=0.7, label='Vraie')
-    ax.plot(corr_filtered_mean, 'r--', alpha=0.7, label='Filtrée')
-    ax.set_title('Corrélation conditionnelle moyenne')
-    ax.set_ylabel('ρ̄_t')
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-    
-    # Tau de Kendall
-    ax = axes[1, 1]
-    tau_true = compute_kendall_tau(corr_true_mean)
-    tau_filtered = compute_kendall_tau(corr_filtered_mean)
-    ax.plot(tau_true, 'b-', alpha=0.7, label='Vrai')
-    ax.plot(tau_filtered, 'r--', alpha=0.7, label='Filtré')
-    ax.set_title("Tau de Kendall moyen")
-    ax.set_ylabel('τ̄_t')
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-    
-    plt.suptitle(f'Copule Student (ν={model_student.nu}) - LL={pf.logLt:.1f}', fontsize=12)
-    plt.tight_layout()
-    plt.savefig('/home/claude/copula_uniform_test.png', dpi=150)
-    plt.show()
-    
-    print("\n✓ Figure sauvegardée: copula_uniform_test.png")
-    
-    # === Comparaison Gaussien vs Student ===
-    print("\n[5] Comparaison Gaussien vs Student")
-    
-    # Conversion des u simulées (Student) en x Gaussien pour tester le modèle Gaussien
-    # Attention : ce n'est pas correct en théorie, mais permet de comparer les LL
-    
-    model_gauss = GaussianFactorCopulaSSM_U(
-        n_series=n_series,
-        n_factors=n_factors,
-        mu=0.5,
-        phi=0.95,
-        sigma=0.1
-    )
-    
-    # Simuler des données Gaussiennes
-    states_g, u_data_g = simulate_copula_model_U(model_gauss, T)
-    
-    # Filtrer avec modèle Gaussien
-    fk_g = ssm.Bootstrap(ssm=model_gauss, data=u_data_g)
-    pf_g = particles.SMC(fk=fk_g, N=N_particles)
-    pf_g.run()
-    
-    print(f"    LL Gaussien (données Gaussiennes): {pf_g.logLt:.2f}")
-    print(f"    LL Student (données Student): {pf.logLt:.2f}")
-    
-    print("\n" + "="*60)
-    print("TEST TERMINÉ")
-    print("="*60)
-
-# test

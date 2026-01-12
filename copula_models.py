@@ -9,9 +9,7 @@ import particles
 from particles import state_space_models as ssm
 from particles import distributions as dists
 
-# =============================================================================
-# 1. MOTEUR DE CALCUL OPTIMISÉ (NUMBA)
-# =============================================================================
+
 
 @njit(fastmath=True, cache=True)
 def _fast_student_logpdf(x, C, nu):
@@ -65,10 +63,6 @@ def _fast_student_logpdf(x, C, nu):
         
     return log_pdfs
 
-# =============================================================================
-# 2. TRANSITION D'ÉTAT
-# =============================================================================
-
 class NormalTransition(dists.ProbDist):
     def __init__(self, loc, scale):
         self.loc = np.atleast_1d(loc)
@@ -88,17 +82,12 @@ class NormalTransition(dists.ProbDist):
             return random.normal(loc=self.loc, scale=self.scale, size=(size, d))
         return random.normal(loc=self.loc, scale=self.scale)
 
-# =============================================================================
-# 3. MODÈLE GAUSSIEN
-# =============================================================================
-
 class GaussianCopulaDist(dists.ProbDist):
     def __init__(self, loadings):
         self.C = loadings
         self.N, self.n, self.p = self.C.shape
 
     def logpdf(self, x):
-        # Fallback NumPy pour le Gaussien (moins critique ou à optimiser si besoin)
         x = np.atleast_1d(x)
         CCt = np.matmul(self.C, self.C.transpose(0, 2, 1))
         diag_Sigma = 1.0 + np.sum(self.C**2, axis=-1)
@@ -141,10 +130,6 @@ class GaussianFactorCopulaSSM(ssm.StateSpaceModel):
         loadings = x.reshape(-1, self.n, self.p)
         return GaussianCopulaDist(loadings)
 
-# =============================================================================
-# 4. MODÈLE STUDENT STANDARD (OPTIMISÉ)
-# =============================================================================
-
 class StudentCopulaDist(dists.ProbDist):
     def __init__(self, loadings, nu=5.0):
         self.C = loadings
@@ -182,10 +167,6 @@ class StudentFactorCopulaSSM(ssm.StateSpaceModel):
     def PY(self, t, xp, x):
         loadings = x.reshape(-1, self.n, self.p)
         return StudentCopulaDist(loadings, nu=self.nu)
-
-# =============================================================================
-# 5. MODÈLE GROUPED STUDENT (OPTIMISÉ)
-# =============================================================================
 
 class GroupedStudentCopulaDist(dists.ProbDist):
     def __init__(self, loadings, nus, group_map):
@@ -231,9 +212,6 @@ class GroupedStudentFactorCopulaSSM(ssm.StateSpaceModel):
         loadings = x.reshape(-1, self.n, self.p)
         return GroupedStudentCopulaDist(loadings, self.nus, self.group_map)
 
-# =============================================================================
-# 6. WRAPPER DE SIMULATION
-# =============================================================================
 
 def simulate_copula_model_particles(model, T):
     true_states, observations = model.simulate(T)

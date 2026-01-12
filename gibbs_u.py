@@ -9,10 +9,6 @@ from numba import njit
 import math
 from tqdm import tqdm
 
-# =============================================================================
-# 1. MOTEUR DE CALCUL ULTRA-RAPIDE (NUMBA)
-# =============================================================================
-
 @njit(fastmath=True, cache=True)
 def _numba_copula_likelihood(x_proposals, i, n, p, z_t, zeta_t, x_data_t, all_lambdas_t, nu, is_student):
     """Calcul optimisé de la log-vraisemblance pour les particules."""
@@ -68,9 +64,6 @@ def _numba_copula_likelihood(x_proposals, i, n, p, z_t, zeta_t, x_data_t, all_la
             
     return log_pdfs
 
-# =============================================================================
-# 2. CLASSES DU MODÈLE POUR PARTICLES
-# =============================================================================
 
 class CopulaLikelihood(dists.ProbDist):
     def __init__(self, i, t, n, p, z_t, zeta_t, x_data_t, all_lambdas_t, nu=None):
@@ -89,9 +82,6 @@ class LoadingSSM(ssm.StateSpaceModel):
                                self.zeta[t] if self.nu else 1.0, 
                                self.x_data[t], self.all_lambdas[t], self.nu)
 
-# =============================================================================
-# 3. GIBBS SAMPLER COMPLET
-# =============================================================================
 
 class FactorCopulaGibbs:
     def __init__(self, u_data, n_factors=1, copula_type='student', nu_init=8.0):
